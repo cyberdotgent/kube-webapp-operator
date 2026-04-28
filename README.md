@@ -10,6 +10,7 @@ A lightweight Kubernetes operator that introduces a `WebApp` Custom Resource to 
 - `Service`
 - `PersistentVolumeClaims` (optional)
 - Traefik `IngressRoute` (optional)
+- Database (PostgreSQL or MariaDB, optional)
 
 Instead of writing repetitive YAML for each app, you define a single `WebApp` resource, and the operator handles the rest.
 
@@ -19,36 +20,68 @@ This is especially useful for homelabs, internal platforms, or lightweight PaaS-
 
 ## Example
 
+### Simple web app without database
+
 ```yaml
 apiVersion: webapp.cyber.gent/v1
 kind: WebApp
 metadata:
-  name: example-webapp
+  name: hello-world
   namespace: apps
 spec:
   image: ghcr.io/cyberdotgent/helloworld:latest
   port: 3000
   proto: http
-  ingress: helloworld.example.com
+  ingress: hello.example.com
 
   env:
-    - name: ENV_VAR_NAME
-      value: env_var_data
-    - name: DB_PASS
-      fromSecret: example-webapp-db-pass
+    - name: LOG_LEVEL
+      value: info
 
   volumes:
     - mountPath: /app/data
-    - mountPath: /app/logs
-      size: 25Gi
+      size: 10Gi
 ```
 
-This will automatically create:
+### WordPress with MariaDB
 
-- A `Deployment` running your container
+```yaml
+apiVersion: webapp.cyber.gent/v1
+kind: WebApp
+metadata:
+  name: wordpress
+  namespace: apps
+spec:
+  image: wordpress:latest
+  port: 80
+  proto: http
+  ingress: wordpress.example.com
+
+  database:
+    type: mariadb
+    volumeSize: 20Gi
+    dbUserVar: WORDPRESS_DB_USER
+    dbPassVar: WORDPRESS_DB_PASSWORD
+    dbHostVar: WORDPRESS_DB_HOST
+    dbNameVar: WORDPRESS_DB_NAME
+
+  env:
+    - name: WORDPRESS_TABLE_PREFIX
+      value: "wp_"
+
+  volumes:
+    - mountPath: /var/www/html
+      size: 20Gi
+```
+
+This automatically creates:
+
+- A `Deployment` running the container
 - A `Service` exposing it internally
-- `PersistentVolumeClaims` for each volume
+- `PersistentVolumeClaims` for each volume (including database storage)
 - A Traefik `IngressRoute` for external access
+- A managed database (PostgreSQL or MariaDB) with auto-generated credentials
+- Environment variables injected with database connection details
 
 ---
 
@@ -62,8 +95,65 @@ This will automatically create:
 - Automatic PVC creation:
   - Default size: `10Gi`
   - Auto-generated names if omitted
+- **Managed databases** (optional):
+  - PostgreSQL (default version: 18.6.2)
+  - MariaDB (default version: 25.0.10)
+  - Auto-generated credentials stored in Secret
+  - Customizable environment variable names
+  - Persistent storage with configurable size
 - Traefik integration via `IngressRoute`
 - Supports `http` and `https` backends
+
+---
+
+## Database Configuration
+
+The `database` field in `spec` is optional and enables automatic provisioning of PostgreSQL or MariaDB:
+
+```yaml
+database:
+  type: postgres              # or 'mariadb'
+  volumeSize: 10Gi            # default: 10Gi
+  chartVersion: "18.6.2"      # optional, uses defaults per engine
+  dbUserVar: DB_USER          # env var for username (default: DB_USER)
+  dbPassVar: DB_PASS          # env var for password (default: DB_PASS)
+  dbHostVar: DB_HOST          # env var for hostname (default: DB_HOST)
+  dbNameVar: DB_NAME          # env var for database name (default: DB_NAME)
+  jdbcVar: DB_JDBC            # env var for JDBC URL (default: DB_JDBC)
+```
+
+### How it works
+
+- **Auto-generated credentials**: A Secret is created with random password on first deploy (immutable on updates)
+- **Deterministic naming**: Database host is derived from app name (e.g., `myapp-db-postgresql.namespace.svc.cluster.local`)
+- **Configurable env vars**: Specify environment variable names to match your app's expectations
+- **Bitnami charts**: Uses official Bitnami Helm charts from `charts.bitnami.com/bitnami`
+- **Persistent storage**: Database volume is created with specified size (default 10Gi)
+
+### Example: PostgreSQL with custom env var names
+
+```yaml
+database:
+  type: postgres
+  volumeSize: 20Gi
+  dbUserVar: PGUSER
+  dbPassVar: PGPASSWORD
+  dbHostVar: PGHOST
+  dbNameVar: PGDATABASE
+```
+
+### Updating chart versions
+
+Default versions are defined in `internal/controller/defaults.go`:
+
+```go
+const (
+    DefaultPostgresChartVersion = "18.6.2"
+    DefaultMariaDBChartVersion  = "25.0.10"
+)
+```
+
+To use a different version, either override per-app or update the constants and rebuild the operator.
 
 ---
 
@@ -76,6 +166,7 @@ This will automatically create:
 - kubectl
 - Kubernetes cluster (k3s recommended)
 - Traefik installed with CRDs (`IngressRoute`)
+- For database support: k3s with built-in Helm Chart CRD (`helm.cattle.io/v1`)
 
 ---
 
@@ -176,10 +267,13 @@ kubectl apply -f https://raw.githubusercontent.com/cyberdotgent/kube-webapp-oper
 ## Design Notes
 
 - Each `WebApp` owns all generated resources via owner references
-- Deleting the `WebApp` cleans up everything automatically
+- Deleting the `WebApp` cleans up everything automatically (including database and credentials)
 - Volume names are deterministic based on app name + mount path
 - Secret keys are assumed to match the environment variable name
 - Ingress is optional; if omitted, no external exposure is created
+- Database credentials are generated once on creation and never overwritten on reconciliation
+- Database host and JDBC URLs are computed deterministically from app name and namespace
+- Database environment variable names are customizable to match app requirements
 
 ---
 
@@ -192,6 +286,8 @@ Contributions are welcome. Areas for improvement include:
 - Autoscaling (HPA support)
 - Advanced ingress options (middlewares, headers, etc.)
 - Configurable storage classes
+- Database backup/restore utilities
+- Multi-database instances per WebApp
 
 ---
 
