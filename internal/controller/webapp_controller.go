@@ -5,22 +5,28 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"maps"
+	"regexp"
+	"strings"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"regexp"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"strings"
 
 	webappv1 "github.com/cyberdotgent/kube-webapp-operator/api/v1"
+)
+
+const (
+	protoHTTPS    = "https"
+	dbTypeMariaDB = "mariadb"
 )
 
 type WebAppReconciler struct {
@@ -44,7 +50,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if app.ObjectMeta.DeletionTimestamp != nil {
+	if app.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
 	}
 
@@ -184,21 +190,21 @@ func (r *WebAppReconciler) reconcileIngressRoute(ctx context.Context, app *webap
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ingressRoute, func() error {
 		ingressRoute.SetLabels(mergeStringMap(ingressRoute.GetLabels(), labels))
 
-		service := map[string]interface{}{
+		service := map[string]any{
 			"name": app.Name,
 			"port": app.Spec.Port,
 		}
 
-		if protoForWebApp(app) == "https" {
-			service["scheme"] = "https"
+		if protoForWebApp(app) == protoHTTPS {
+			service["scheme"] = protoHTTPS
 		}
 
-		ingressRoute.Object["spec"] = map[string]interface{}{
-			"routes": []interface{}{
-				map[string]interface{}{
+		ingressRoute.Object["spec"] = map[string]any{
+			"routes": []any{
+				map[string]any{
 					"match": fmt.Sprintf("Host(`%s`)", app.Spec.Ingress),
 					"kind":  "Rule",
-					"services": []interface{}{
+					"services": []any{
 						service,
 					},
 				},
@@ -207,21 +213,6 @@ func (r *WebAppReconciler) reconcileIngressRoute(ctx context.Context, app *webap
 
 		return controllerutil.SetControllerReference(app, ingressRoute, r.Scheme)
 	})
-
-	return err
-}
-
-func (r *WebAppReconciler) deleteIngressRoute(ctx context.Context, app *webappv1.WebApp) error {
-	ingressRoute := &unstructured.Unstructured{}
-	ingressRoute.SetAPIVersion("traefik.io/v1alpha1")
-	ingressRoute.SetKind("IngressRoute")
-	ingressRoute.SetName(app.Name + "-frontend")
-	ingressRoute.SetNamespace(app.Namespace)
-
-	err := r.Delete(ctx, ingressRoute)
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
 
 	return err
 }
@@ -236,8 +227,8 @@ func labelsForWebApp(app *webappv1.WebApp) map[string]string {
 
 func protoForWebApp(app *webappv1.WebApp) string {
 	switch strings.ToLower(strings.TrimSpace(app.Spec.Proto)) {
-	case "https":
-		return "https"
+	case protoHTTPS:
+		return protoHTTPS
 	default:
 		return "http"
 	}
@@ -350,15 +341,8 @@ func sanitizeDNS1123Label(value string) string {
 
 func mergeStringMap(existing map[string]string, desired map[string]string) map[string]string {
 	out := map[string]string{}
-
-	for k, v := range existing {
-		out[k] = v
-	}
-
-	for k, v := range desired {
-		out[k] = v
-	}
-
+	maps.Copy(out, existing)
+	maps.Copy(out, desired)
 	return out
 }
 
@@ -448,7 +432,7 @@ func (r *WebAppReconciler) reconcileDBHelmChart(ctx context.Context, app *webapp
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, func() error {
 		obj.SetLabels(mergeStringMap(obj.GetLabels(), labelsForWebApp(app)))
-		obj.Object["spec"] = map[string]interface{}{
+		obj.Object["spec"] = map[string]any{
 			"chart":           chartName,
 			"repo":            "https://charts.bitnami.com/bitnami",
 			"version":         chartVersion,
@@ -464,7 +448,7 @@ func dbChartVersion(db *webappv1.DatabaseSpec) string {
 	if db.ChartVersion != "" {
 		return db.ChartVersion
 	}
-	if db.Type == "mariadb" {
+	if db.Type == dbTypeMariaDB {
 		return DefaultMariaDBChartVersion
 	}
 	return DefaultPostgresChartVersion
@@ -472,7 +456,7 @@ func dbChartVersion(db *webappv1.DatabaseSpec) string {
 
 func dbConnDetails(dbType, releaseName, namespace, dbName string) (host, jdbcURL string) {
 	switch dbType {
-	case "mariadb":
+	case dbTypeMariaDB:
 		host = fmt.Sprintf("%s-mariadb.%s.svc.cluster.local", releaseName, namespace)
 		jdbcURL = fmt.Sprintf("jdbc:mariadb://%s:3306/%s", host, dbName)
 	default:
@@ -484,7 +468,7 @@ func dbConnDetails(dbType, releaseName, namespace, dbName string) (host, jdbcURL
 
 func dbHelmValues(dbType, dbUser, password, dbName, volumeSize string) (chartName, values string) {
 	switch dbType {
-	case "mariadb":
+	case dbTypeMariaDB:
 		chartName = "mariadb"
 		values = fmt.Sprintf(`auth:
   username: %s
