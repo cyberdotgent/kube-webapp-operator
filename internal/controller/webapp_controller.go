@@ -151,11 +151,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	if strings.TrimSpace(app.Spec.Ingress) == "" {
-		if err := r.deleteIngressRoute(ctx, &app); err != nil {
-			return ctrl.Result{}, err
-		}
-	} else {
+	if strings.TrimSpace(app.Spec.Ingress) != "" {
 		if err := r.reconcileIngressRoute(ctx, &app, labels); err != nil {
 			return ctrl.Result{}, err
 		}

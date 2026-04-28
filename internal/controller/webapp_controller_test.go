@@ -1,5 +1,5 @@
 /*
-Copyright 2026.
+Copyright 2026 CYBER.gent.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,55 +19,71 @@ package controller
 import (
 	"context"
 
+	webappv1 "github.com/cyberdotgent/kube-webapp-operator/api/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	webappv1 "github.com/cyberdotgent/kube-webapp-operator/api/v1"
 )
 
 var _ = Describe("WebApp Controller", func() {
-	Context("When reconciling a resource", func() {
+	Context("When reconciling a resource without ingress", func() {
 		const resourceName = "test-resource"
 
 		ctx := context.Background()
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default",
 		}
-		webapp := &webappv1.WebApp{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind WebApp")
-			err := k8sClient.Get(ctx, typeNamespacedName, webapp)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &webappv1.WebApp{
+
+			resource := &webappv1.WebApp{}
+			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+
+			if apierrors.IsNotFound(err) {
+				resource = &webappv1.WebApp{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: webappv1.WebAppSpec{
+						Image: "nginx:latest",
+						Port:  80,
+						Proto: "http",
+					},
 				}
+
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+				return
 			}
+
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &webappv1.WebApp{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+
+			if apierrors.IsNotFound(err) {
+				return
+			}
+
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance WebApp")
+			By("cleaning up the WebApp resource")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
+
 		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
+			By("reconciling the created resource")
+
 			controllerReconciler := &WebAppReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -77,8 +93,23 @@ var _ = Describe("WebApp Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			By("checking that the Deployment was created")
+
+			deployment := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, deployment)).To(Succeed())
+			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:latest"))
+			Expect(deployment.Spec.Template.Spec.Containers[0].Ports).To(HaveLen(1))
+			Expect(deployment.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(80)))
+
+			By("checking that the Service was created")
+
+			service := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, service)).To(Succeed())
+			Expect(service.Spec.Ports).To(HaveLen(1))
+			Expect(service.Spec.Ports[0].Port).To(Equal(int32(80)))
+			Expect(service.Spec.Ports[0].TargetPort.IntVal).To(Equal(int32(80)))
 		})
 	})
 })
