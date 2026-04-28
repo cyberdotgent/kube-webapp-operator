@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,8 +32,9 @@ type WebAppReconciler struct {
 // +kubebuilder:rbac:groups=webapp.cyber.gent,resources=webapps/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=webapp.cyber.gent,resources=webapps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=traefik.io,resources=ingressroutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=helm.cattle.io,resources=helmcharts,verbs=get;list;watch;create;update;patch;delete
 
 func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -46,6 +49,15 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	labels := labelsForWebApp(&app)
+
+	var dbEnvVars []corev1.EnvVar
+	if app.Spec.Database != nil {
+		var err error
+		dbEnvVars, err = r.reconcileDatabase(ctx, &app)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	for _, volume := range app.Spec.Volumes {
 		pvcName := pvcNameForVolume(&app, volume)
@@ -110,7 +122,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 							Name:         "web",
 							Image:        app.Spec.Image,
 							Ports:        containerPortsForWebApp(&app),
-							Env:          envVarsForWebApp(&app),
+							Env:          envVarsForWebApp(&app, dbEnvVars),
 							VolumeMounts: volumeMountsForWebApp(&app),
 						},
 					},
@@ -241,8 +253,10 @@ func containerPortsForWebApp(app *webappv1.WebApp) []corev1.ContainerPort {
 	}
 }
 
-func envVarsForWebApp(app *webappv1.WebApp) []corev1.EnvVar {
-	envVars := make([]corev1.EnvVar, 0, len(app.Spec.Env))
+func envVarsForWebApp(app *webappv1.WebApp, extra []corev1.EnvVar) []corev1.EnvVar {
+	envVars := make([]corev1.EnvVar, 0, len(extra)+len(app.Spec.Env))
+
+	envVars = append(envVars, extra...)
 
 	for _, env := range app.Spec.Env {
 		if env.FromSecret != "" {
@@ -352,12 +366,173 @@ func intstrFromInt32(value int32) intstr.IntOrString {
 	return intstr.FromInt(int(value))
 }
 
+func (r *WebAppReconciler) reconcileDatabase(ctx context.Context, app *webappv1.WebApp) ([]corev1.EnvVar, error) {
+	db := app.Spec.Database
+
+	releaseName := sanitizeDNS1123Label(app.Name + "-db")
+	secretName := releaseName + "-credentials"
+	dbUser := sanitizeSQLIdentifier(app.Name)
+	dbName := sanitizeSQLIdentifier(app.Name) + "_db"
+	volumeSize := coalesce(db.VolumeSize, DefaultDBVolumeSize)
+	chartVersion := dbChartVersion(db)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: app.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.ResourceVersion == "" {
+			password, err := generateRandomPassword()
+			if err != nil {
+				return err
+			}
+			secret.Data = map[string][]byte{
+				"password": []byte(password),
+				"username": []byte(dbUser),
+				"dbname":   []byte(dbName),
+			}
+		}
+		return controllerutil.SetControllerReference(app, secret, r.Scheme)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+		return nil, err
+	}
+	password := string(secret.Data["password"])
+
+	dbHost, jdbcURL := dbConnDetails(db.Type, releaseName, app.Namespace, dbName)
+
+	if err := r.reconcileDBHelmChart(ctx, app, releaseName, db, chartVersion, dbUser, password, dbName, volumeSize); err != nil {
+		return nil, err
+	}
+
+	userVar := coalesce(db.DBUserVar, DefaultDBUserVar)
+	passVar := coalesce(db.DBPassVar, DefaultDBPassVar)
+	hostVar := coalesce(db.DBHostVar, DefaultDBHostVar)
+	nameVar := coalesce(db.DBNameVar, DefaultDBNameVar)
+	jdbcVar := coalesce(db.JDBCVar, DefaultJDBCVar)
+
+	return []corev1.EnvVar{
+		{Name: userVar, Value: dbUser},
+		{Name: hostVar, Value: dbHost},
+		{Name: nameVar, Value: dbName},
+		{Name: jdbcVar, Value: jdbcURL},
+		{
+			Name: passVar,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  "password",
+				},
+			},
+		},
+	}, nil
+}
+
+func (r *WebAppReconciler) reconcileDBHelmChart(ctx context.Context, app *webappv1.WebApp,
+	releaseName string, db *webappv1.DatabaseSpec, chartVersion, dbUser, password, dbName, volumeSize string) error {
+
+	chartName, valuesContent := dbHelmValues(db.Type, dbUser, password, dbName, volumeSize)
+
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("helm.cattle.io/v1")
+	obj.SetKind("HelmChart")
+	obj.SetName(releaseName)
+	obj.SetNamespace(app.Namespace)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, func() error {
+		obj.SetLabels(mergeStringMap(obj.GetLabels(), labelsForWebApp(app)))
+		obj.Object["spec"] = map[string]interface{}{
+			"chart":           chartName,
+			"repo":            "https://charts.bitnami.com/bitnami",
+			"version":         chartVersion,
+			"targetNamespace": app.Namespace,
+			"valuesContent":   valuesContent,
+		}
+		return controllerutil.SetControllerReference(app, obj, r.Scheme)
+	})
+	return err
+}
+
+func dbChartVersion(db *webappv1.DatabaseSpec) string {
+	if db.ChartVersion != "" {
+		return db.ChartVersion
+	}
+	if db.Type == "mariadb" {
+		return DefaultMariaDBChartVersion
+	}
+	return DefaultPostgresChartVersion
+}
+
+func dbConnDetails(dbType, releaseName, namespace, dbName string) (host, jdbcURL string) {
+	switch dbType {
+	case "mariadb":
+		host = fmt.Sprintf("%s-mariadb.%s.svc.cluster.local", releaseName, namespace)
+		jdbcURL = fmt.Sprintf("jdbc:mariadb://%s:3306/%s", host, dbName)
+	default:
+		host = fmt.Sprintf("%s-postgresql.%s.svc.cluster.local", releaseName, namespace)
+		jdbcURL = fmt.Sprintf("jdbc:postgresql://%s:5432/%s", host, dbName)
+	}
+	return
+}
+
+func dbHelmValues(dbType, dbUser, password, dbName, volumeSize string) (chartName, values string) {
+	switch dbType {
+	case "mariadb":
+		chartName = "mariadb"
+		values = fmt.Sprintf(`auth:
+  username: %s
+  password: %s
+  database: %s
+primary:
+  persistence:
+    size: %s`, dbUser, password, dbName, volumeSize)
+	default:
+		chartName = "postgresql"
+		values = fmt.Sprintf(`auth:
+  username: %s
+  password: %s
+  database: %s
+primary:
+  persistence:
+    size: %s`, dbUser, password, dbName, volumeSize)
+	}
+	return
+}
+
+func sanitizeSQLIdentifier(value string) string {
+	s := sanitizeDNS1123Label(value)
+	return strings.ReplaceAll(s, "-", "_")
+}
+
+func generateRandomPassword() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+func coalesce(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
+}
+
 func (r *WebAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&webappv1.WebApp{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&corev1.Secret{}).
 		Named("webapp").
 		Complete(r)
 }

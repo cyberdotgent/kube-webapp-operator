@@ -28,10 +28,33 @@ type WebAppSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
 	// +kubebuilder:validation:Enum=http;https
-	Proto   string       `json:"proto,omitempty"`
-	Ingress string       `json:"ingress,omitempty"`
-	Env     []EnvVarSpec `json:"env,omitempty"`
-	Volumes []VolumeSpec `json:"volumes,omitempty"`
+	Proto    string        `json:"proto,omitempty"`
+	Ingress  string        `json:"ingress,omitempty"`
+	Env      []EnvVarSpec  `json:"env,omitempty"`
+	Volumes  []VolumeSpec  `json:"volumes,omitempty"`
+	Database *DatabaseSpec `json:"database,omitempty"`
+}
+
+type DatabaseSpec struct {
+	// +kubebuilder:validation:Enum=postgres;mariadb
+	Type string `json:"type"`
+
+	// +optional
+	VolumeSize string `json:"volumeSize,omitempty"`
+
+	// +optional
+	DBUserVar string `json:"dbUserVar,omitempty"`
+	// +optional
+	DBPassVar string `json:"dbPassVar,omitempty"`
+	// +optional
+	DBHostVar string `json:"dbHostVar,omitempty"`
+	// +optional
+	DBNameVar string `json:"dbNameVar,omitempty"`
+	// +optional
+	JDBCVar string `json:"jdbcVar,omitempty"`
+
+	// +optional
+	ChartVersion string `json:"chartVersion,omitempty"`
 }
 
 type EnvVarSpec struct {

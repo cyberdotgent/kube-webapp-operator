@@ -1,0 +1,23 @@
+apiVersion: webapp.cyber.gent/v1
+kind: WebApp
+metadata:
+  name: mariadb-app
+  namespace: apps
+spec:
+  image: ghcr.io/cyberdotgent/myapp:latest
+  port: 8080
+  proto: http
+  ingress: myapp.example.com
+
+  database:
+    type: mariadb
+    volumeSize: 20Gi
+    chartVersion: "25.0.10"
+
+  env:
+    - name: APP_ENV
+      value: production
+
+  volumes:
+    - mountPath: /app/cache
+      size: 5Gi

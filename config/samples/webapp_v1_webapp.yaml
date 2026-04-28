@@ -1,9 +1,32 @@
 apiVersion: webapp.cyber.gent/v1
 kind: WebApp
 metadata:
-  labels:
-    app.kubernetes.io/name: kube-webapp-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: webapp-sample
+  name: example-webapp
+  namespace: apps
 spec:
-  # TODO(user): Add fields here
+  image: ghcr.io/cyberdotgent/helloworld:latest
+  port: 3000
+  proto: http
+  ingress: helloworld.example.com
+
+  database:
+    type: postgres
+    volumeSize: 10Gi
+    dbUserVar: DB_USER
+    dbPassVar: DB_PASS
+    dbHostVar: DB_HOST
+    dbNameVar: DB_NAME
+    jdbcVar: DB_JDBC
+
+  env:
+    - name: ENV_VAR_NAME
+      value: env_var_data
+    - name: LOG_LEVEL
+      value: info
+
+  volumes:
+    - mountPath: /app/data
+      name: AppData
+    - mountPath: /app/logs
+      name: AppLogs
+      size: 25Gi
