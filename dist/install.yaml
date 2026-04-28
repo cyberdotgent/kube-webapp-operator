@@ -47,6 +47,30 @@ spec:
           spec:
             description: spec defines the desired state of WebApp
             properties:
+              database:
+                properties:
+                  chartVersion:
+                    type: string
+                  dbHostVar:
+                    type: string
+                  dbNameVar:
+                    type: string
+                  dbPassVar:
+                    type: string
+                  dbUserVar:
+                    type: string
+                  jdbcVar:
+                    type: string
+                  type:
+                    enum:
+                    - postgres
+                    - mariadb
+                    type: string
+                  volumeSize:
+                    type: string
+                required:
+                - type
+                type: object
               env:
                 items:
                   properties:
@@ -231,6 +255,7 @@ rules:
   - ""
   resources:
   - persistentvolumeclaims
+  - secrets
   - services
   verbs:
   - create
@@ -244,6 +269,18 @@ rules:
   - apps
   resources:
   - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - helm.cattle.io
+  resources:
+  - helmcharts
   verbs:
   - create
   - delete
