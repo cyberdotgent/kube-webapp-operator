@@ -2,4 +2,4 @@
 
 A simple kubernetes webapp controller+CRD.
 
-See original templated readme in [](template-README.md)
+See original templated readme in [template-README.md](template-README.md)
