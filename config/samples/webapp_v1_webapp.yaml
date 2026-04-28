@@ -1,0 +1,9 @@
+apiVersion: webapp.cyber.gent/v1
+kind: WebApp
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-webapp-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: webapp-sample
+spec:
+  # TODO(user): Add fields here

@@ -1,0 +1,65 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - traefik.io
+  resources:
+  - ingressroutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - webapp.cyber.gent
+  resources:
+  - webapps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - webapp.cyber.gent
+  resources:
+  - webapps/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - webapp.cyber.gent
+  resources:
+  - webapps/status
+  verbs:
+  - get
+  - patch
+  - update
